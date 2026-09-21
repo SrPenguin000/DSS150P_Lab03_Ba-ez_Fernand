@@ -1,7 +1,7 @@
 import argparse
 from src.config import PROJECT_ROOT, DB, SETTINGS
 from src.common.audit import new_run_id
-
+from src.extract.extract import extract_sources
 
 def main():
     parser = argparse.ArgumentParser(description='DSS150P modular pipeline')
@@ -20,6 +20,62 @@ def main():
         print('PROJECT_ROOT=', PROJECT_ROOT)
         print('DB host/database=', DB['host'], DB['dbname'])
         print('Configured source=', SETTINGS['pipeline']['source_dir'])
+        return
+        
+    elif args.command == 'extract':
+        run_id = new_run_id()
+        print(f"Starting extraction with run_id: {run_id}")
+        extract_sources(run_id)
+        return
+        
+    elif args.command == 'transform':
+        from src.transform.staging import build_staging
+        from src.transform.curated import build_curated
+        from pathlib import Path
+    
+        try:
+            raw_base = Path('data/raw')
+            raw_dirs = sorted([d for d in raw_base.iterdir() if d.is_dir()])
+            if not raw_dirs:
+                raise FileNotFoundError("No raw data found. Run extract first.")
+            
+            latest_raw = raw_dirs[-1]
+            run_id = latest_raw.name.split('=')[1]
+        
+            print(f"Staging data from {latest_raw}...")
+            staging_dfs, quarantine_df = build_staging(latest_raw, run_id)
+            print("Staging transformations complete.")
+        
+            print("Building curated dataset...")
+            build_curated(staging_dfs, run_id)
+            print("Curated transformations complete.")
+        
+        except Exception as e:
+            print(f"Pipeline Stage Failure [Transform]: {str(e)}")
+            raise e
+        return
+
+    elif args.command == 'load':
+        from src.load.postgres import upsert_curated
+        import pandas as pd
+        from pathlib import Path
+        
+        try:
+            curated_file = Path("data/curated/sales_order_lines.parquet")
+            if not curated_file.exists():
+                raise FileNotFoundError("Curated data not found. Run transform first.")
+                
+            print(f"Loading curated data from {curated_file}...")
+            df = pd.read_parquet(curated_file)
+            
+            run_id = df['pipeline_run_id'].iloc[0]
+            
+            rows_loaded = upsert_curated(df, run_id)
+            print(f"Successfully UPSERTed {rows_loaded} rows into PostgreSQL curated.sales_order_lines.")
+            
+        except Exception as e:
+            print(f"Pipeline Stage Failure [Load]: {str(e)}")
+            raise e
         return
 
     # TODO: Wire the modular functions together. Keep orchestration logic thin.

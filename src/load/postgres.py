@@ -1,11 +1,57 @@
-def upsert_curated(df, run_id: str) -> int:
-    """Load curated.sales_order_lines using rerun-safe UPSERT semantics.
+import psycopg2
+import psycopg2.extras
+import pandas as pd
+from src.config import DB
 
-    Requirement: order_id is the conflict key. A rerun with unchanged records
-    must not create duplicate business keys.
+def upsert_curated(df: pd.DataFrame, run_id: str) -> int:
     """
-    raise NotImplementedError('Implement Goal 2 PostgreSQL UPSERT')
+    Load curated.sales_order_lines using rerun-safe UPSERT semantics.
+    Dynamically filters dataframe columns to match the target database schema.
+    """
+    conn = psycopg2.connect(**DB)
+    try:
+        # 1. Ask PostgreSQL for the exact columns in the target table
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'curated' AND table_name = 'sales_order_lines'"
+            )
+            db_cols = [row[0] for row in cur.fetchall()]
+            
+        if not db_cols:
+            raise ValueError("Could not find table curated.sales_order_lines in the database.")
 
+        # 2. Filter our dataframe to ONLY keep columns that exist in the database
+        cols_to_keep = [c for c in df.columns if c in db_cols]
+        df_clean = df[cols_to_keep].copy()
+        
+        # 3. Convert NaNs and NaTs to standard Python None for DB compatibility
+        df_clean = df_clean.astype(object).where(pd.notnull(df_clean), None)
+        
+        # 4. Build the dynamic SQL query
+        cols_str = ', '.join(cols_to_keep)
+        set_clauses = ', '.join([f"{col} = EXCLUDED.{col}" for col in cols_to_keep if col != 'order_id'])
+        
+        query = f"""
+            INSERT INTO curated.sales_order_lines ({cols_str})
+            VALUES %s
+            ON CONFLICT (order_id) 
+            DO UPDATE SET {set_clauses};
+        """
+        
+        # 5. Execute the bulk UPSERT
+        data_tuples = [tuple(x) for x in df_clean.to_numpy()]
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, query, data_tuples)
+            
+        conn.commit()
+        return len(df_clean)
+        
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
 def load_partition(df, year: int, month: int, run_id: str) -> int:
     """Load only a selected year/month partition and record audit.partition_loads."""
