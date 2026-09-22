@@ -33,3 +33,44 @@ docker compose -f docker-compose.yml -f docker-compose.airflow.yml up airflow-in
 docker compose -f docker-compose.yml -f docker-compose.airflow.yml up -d airflow-webserver airflow-scheduler
 ```
 Airflow UI: http://localhost:8080 (training credentials: admin/admin; change if reused outside the lab).
+
+
+
+-----------------------------------------------------------------------------------------------------------------------
+
+
+
+DSS150P Pipeline Execution Commands
+1. Environment & Infrastructure Setup
+Activate the virtual environment and start the required PostgreSQL and Apache Airflow containers:
+
+PowerShell:
+# Activate virtual environment (Windows)
+.venv\Scripts\activate
+# Start PostgreSQL database
+docker compose up -d
+# Start Airflow orchestration
+docker compose -f docker-compose.airflow.yml up -d
+# Verify all containers are running
+docker ps
+
+2. CLI Pipeline Execution
+Run the modular Python pipeline using the custom CLI:
+
+PowerShell:
+# Validate environment variables and connections
+python -m src.cli validate-env
+# Run the complete end-to-end ETL pipeline
+python -m src.cli run-all
+# Run an idempotent PostgreSQL load independently
+python -m src.cli load
+# Generate Parquet vs CSV query performance benchmarks
+python -m src.cli benchmark
+# Execute a parameterized load for a specific partition
+
+python -m src.cli load-partition --year 2026 --month 09
+3. Infrastructure Teardown
+Safely stop and remove the Docker containers when finished:
+PowerShell:
+docker compose down
+docker compose -f docker-compose.airflow.yml down
