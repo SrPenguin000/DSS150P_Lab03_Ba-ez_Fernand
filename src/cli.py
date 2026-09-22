@@ -78,6 +78,64 @@ def main():
             raise e
         return
 
+    elif args.command == 'validate':
+        from src.validate.quality import validate_curated
+        import pandas as pd
+        from pathlib import Path
+        
+        try:
+            curated_file = Path("data/curated/sales_order_lines.parquet")
+            if not curated_file.exists():
+                raise FileNotFoundError("Curated data not found. Run transform first.")
+                
+            print(f"Validating curated data from {curated_file}...")
+            df = pd.read_parquet(curated_file)
+            
+            errors = validate_curated(df)
+            
+            if errors:
+                for error in errors:
+                    print(f"{error}")
+                raise ValueError(f"Data validation failed with {len(errors)} errors.")
+            else:
+                print("PASSED: Curated dataset meets all quality constraints.")
+                
+        except Exception as e:
+            print(f"Pipeline Stage Failure [Validate]: {str(e)}")
+            raise e
+        return
+        
+    elif args.command == 'run-all':
+        print("--- Running Full ETL Pipeline ---")
+        run_id = new_run_id()
+        extract_sources(run_id)
+        
+        from src.transform.staging import build_staging
+        from src.transform.curated import build_curated
+        from src.load.postgres import upsert_curated
+        from src.validate.quality import validate_curated
+        import pandas as pd
+        from pathlib import Path
+        
+        try:
+            latest_raw = sorted([d for d in Path('data/raw').iterdir() if d.is_dir()])[-1]
+            staging_dfs, quarantine_df = build_staging(latest_raw, run_id)
+            build_curated(staging_dfs, run_id)
+            
+            curated_file = Path("data/curated/sales_order_lines.parquet")
+            df = pd.read_parquet(curated_file)
+            rows = upsert_curated(df, run_id)
+            
+            errors = validate_curated(df)
+            if errors:
+                raise ValueError("Validation failed after load.")
+            print(f"--- Pipeline complete! Upserted {rows} rows. ---")
+            
+        except Exception as e:
+            print(f"Pipeline Stage Failure [Run-All]: {str(e)}")
+            raise e
+        return
+
     # TODO: Wire the modular functions together. Keep orchestration logic thin.
     raise NotImplementedError(f'Wire command: {args.command}')
 

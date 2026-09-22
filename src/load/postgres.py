@@ -36,7 +36,8 @@ def upsert_curated(df: pd.DataFrame, run_id: str) -> int:
             INSERT INTO curated.sales_order_lines ({cols_str})
             VALUES %s
             ON CONFLICT (order_id) 
-            DO UPDATE SET {set_clauses};
+            DO UPDATE SET {set_clauses}
+            WHERE sales_order_lines.record_hash IS DISTINCT FROM EXCLUDED.record_hash;
         """
         
         # 5. Execute the bulk UPSERT

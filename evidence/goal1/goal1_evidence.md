@@ -1,0 +1,4 @@
+Evidence for Goal 1:
+
+How is configuration seperated from code?
+- Configuration is separated from code by storing environment-specific variables—such as database credentials and dynamic file paths—inside a local .env file. This .env file is explicitly ignored by Git (via .gitignore), ensuring sensitive secrets are never committed to version control. The Python application (src/config.py) dynamically loads these variables at runtime. This modular approach allows the exact same codebase to run in local, testing, or production environments without any code changes; you simply swap out the .env file.
