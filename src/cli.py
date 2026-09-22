@@ -105,6 +105,50 @@ def main():
             raise e
         return
         
+    elif args.command == 'benchmark':
+        from src.benchmark.storage import run_benchmark, write_partitioned_parquet
+        import pandas as pd
+        from pathlib import Path
+        
+        try:
+            curated_path = Path("data/curated/sales_order_lines.parquet")
+            if not curated_path.exists():
+                raise FileNotFoundError("Curated data not found. Run transform first.")
+                
+            output_dir = Path("data/curated/benchmark")
+            run_benchmark(curated_path, output_dir, repeats=args.repeats)
+            
+            df = pd.read_parquet(curated_path)
+            write_partitioned_parquet(df, Path("data"))
+            
+        except Exception as e:
+            print(f"Pipeline Stage Failure [Benchmark]: {str(e)}")
+            raise e
+        return
+
+    elif args.command == 'load-partition':
+        from src.load.postgres import load_partition
+        import pandas as pd
+        from pathlib import Path
+        
+        try:
+            run_id = new_run_id()
+            part_dir = Path(f"data/partitioned/order_year={args.year}/order_month={args.month}")
+            
+            if not part_dir.exists():
+                raise FileNotFoundError(f"Partition directory {part_dir} not found.")
+                
+            print(f"Loading partitioned data from {part_dir}...")
+            df = pd.read_parquet(part_dir)
+            
+            rows = load_partition(df, args.year, args.month, run_id)
+            print(f"Successfully loaded and audited {rows} rows for {args.year}-{args.month}.")
+            
+        except Exception as e:
+            print(f"Pipeline Stage Failure [Load-Partition]: {str(e)}")
+            raise e
+        return
+
     elif args.command == 'run-all':
         print("--- Running Full ETL Pipeline ---")
         run_id = new_run_id()

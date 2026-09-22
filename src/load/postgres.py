@@ -54,6 +54,31 @@ def upsert_curated(df: pd.DataFrame, run_id: str) -> int:
     finally:
         conn.close()
 
-def load_partition(df, year: int, month: int, run_id: str) -> int:
+def load_partition(df: pd.DataFrame, year: int, month: int, run_id: str) -> int:
     """Load only a selected year/month partition and record audit.partition_loads."""
-    raise NotImplementedError('Implement Goal 3 selected-partition load')
+    # 1. Upsert the dataframe using our existing robust function
+    rows_loaded = upsert_curated(df, run_id)
+    
+    # 2. Record the load event in the audit table
+    conn = psycopg2.connect(**DB)
+    try:
+        partition_key = f"order_year={year}/order_month={month}"
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO audit.partition_loads 
+                (partition_key, pipeline_run_id, loaded_at_utc, row_count)
+                VALUES (%s, %s, NOW() AT TIME ZONE 'UTC', %s)
+                ON CONFLICT (partition_key) 
+                DO UPDATE SET 
+                    pipeline_run_id = EXCLUDED.pipeline_run_id,
+                    loaded_at_utc = EXCLUDED.loaded_at_utc,
+                    row_count = EXCLUDED.row_count;
+            """, (partition_key, run_id, rows_loaded))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+        
+    return rows_loaded
