@@ -5,27 +5,22 @@ from pathlib import Path
 
 def build_curated(staging: dict, run_id: str):
     """Join staging orders/customers/products and create analysis-ready sales rows."""
-    
-    # 1. Extract the DataFrames passed from the staging step
     customers = staging.get('customers')
     products = staging.get('products')
     orders = staging.get('orders')
 
-    # 2. Join Orders to Customers and Products
     df = orders.merge(customers, on="customer_id", how="left", suffixes=("", "_cust"), indicator='_merge_cust')
     df = df.merge(products, on="product_id", how="left", suffixes=("", "_prod"), indicator='_merge_prod')
 
-    # 3. Quarantine Orphan Records
     is_orphan = (df['_merge_cust'] == 'left_only') | (df['_merge_prod'] == 'left_only')
     orphans = df[is_orphan].copy()
     
     if not orphans.empty:
         orphans['quarantine_reason'] = "Orphan reference: Missing customer or product"
-        q_dir = Path("data/quarantine")
+        q_dir = Path(f"data/quarantine/run_id={run_id}")
         q_dir.mkdir(parents=True, exist_ok=True)
-        orphans.to_csv(q_dir / f"quarantine_orphans_{run_id}.csv", index=False)
+        orphans.to_csv(q_dir / "quarantine_orphans.csv", index=False)
 
-    # 4. Process Valid Records
     valid = df[~is_orphan].copy()
     
     if 'discount_pct' not in valid.columns:
@@ -33,17 +28,24 @@ def build_curated(staging: dict, run_id: str):
     else:
         valid['discount_pct'] = pd.to_numeric(valid['discount_pct'], errors='coerce').fillna(0.0)
 
-    # Calculate financial metrics
     valid['gross_amount'] = valid['quantity'] * valid['unit_price']
     valid['discount_amount'] = valid['gross_amount'] * valid['discount_pct']
     valid['net_amount'] = valid['gross_amount'] - valid['discount_amount']
 
-    # 5. Audit Columns & Deterministic Hash
+    # Clean up temporary merge columns before hashing
+    cols_to_drop = [c for c in valid.columns if c.endswith('_cust') or c.endswith('_prod') or c.startswith('_merge')]
+    valid = valid.drop(columns=cols_to_drop)
+
+    # Apply Audit Columns
     valid['pipeline_run_id'] = run_id
     valid['processed_at_utc'] = datetime.now(timezone.utc)
-    valid['source_updated_at'] = valid[['updated_at', 'updated_at_cust', 'updated_at_prod']].max(axis=1)
+    # Safely get max updated_at if they exist
+    time_cols = [c for c in ['updated_at', 'updated_at_cust', 'updated_at_prod'] if c in df.columns]
+    valid['source_updated_at'] = df[time_cols].max(axis=1)
 
-    hash_cols = ['order_id', 'customer_id', 'product_id', 'quantity', 'status', 'net_amount']
+    # Comprehensive Deterministic Hash (Excluding audit metadata)
+    audit_cols = {'pipeline_run_id', 'processed_at_utc', 'staged_at_utc', 'source_updated_at', 'updated_at'}
+    hash_cols = sorted([c for c in valid.columns if c not in audit_cols])
     
     def generate_hash(row):
         val_str = "|".join([str(row[c]) for c in hash_cols])
@@ -51,12 +53,8 @@ def build_curated(staging: dict, run_id: str):
         
     valid['record_hash'] = valid.apply(generate_hash, axis=1)
 
-    # Clean up temporary merge columns
-    cols_to_drop = [c for c in valid.columns if c.endswith('_cust') or c.endswith('_prod') or c.startswith('_merge')]
-    valid = valid.drop(columns=cols_to_drop)
-
-    # Save to Curated layer
-    out_dir = Path("data/curated")
+    # Save to Run-Specific Curated layer
+    out_dir = Path(f"data/curated/run_id={run_id}")
     out_dir.mkdir(parents=True, exist_ok=True)
     valid.to_parquet(out_dir / "sales_order_lines.parquet", index=False)
     
