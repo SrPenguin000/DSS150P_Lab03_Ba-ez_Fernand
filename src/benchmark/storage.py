@@ -16,7 +16,7 @@ def _time_it(func, repeats):
 
 def run_benchmark(curated_path, output_dir, repeats: int = 5):
     """Compare the same logical dataset in CSV, JSON Lines, Parquet, and PostgreSQL."""
-    print(f"--- Running Benchmarks ({repeats} repeats for reads) ---")
+    print(f"--- Running Benchmarks ({repeats} repeats for read/write medians) ---")
     
     curated_path = Path(curated_path)
     output_dir = Path(output_dir)
@@ -28,24 +28,18 @@ def run_benchmark(curated_path, output_dir, repeats: int = 5):
     
     # Load base dataset
     df_base = pd.read_parquet(curated_path)
+    row_count = len(df_base)
     
-    print("Materializing formats...")
-    # CSV Write
-    start = time.perf_counter()
-    df_base.to_csv(csv_path, index=False)
-    csv_write_time = time.perf_counter() - start
+    print(f"Materializing formats for {row_count:,} rows...")
+    
+    # Write Medians
+    csv_write_time = _time_it(lambda: df_base.to_csv(csv_path, index=False), repeats)
     csv_size = csv_path.stat().st_size
     
-    # JSONL Write
-    start = time.perf_counter()
-    df_base.to_json(jsonl_path, orient='records', lines=True, date_format='iso')
-    jsonl_write_time = time.perf_counter() - start
+    jsonl_write_time = _time_it(lambda: df_base.to_json(jsonl_path, orient='records', lines=True, date_format='iso'), repeats)
     jsonl_size = jsonl_path.stat().st_size
     
-    # Parquet Write
-    start = time.perf_counter()
-    df_base.to_parquet(parquet_path, engine='pyarrow', compression='snappy')
-    parquet_write_time = time.perf_counter() - start
+    parquet_write_time = _time_it(lambda: df_base.to_parquet(parquet_path, engine='pyarrow', compression='snappy'), repeats)
     parquet_size = parquet_path.stat().st_size
 
     print("Benchmarking reads...")
@@ -76,25 +70,37 @@ def run_benchmark(curated_path, output_dir, repeats: int = 5):
             cur.execute("SELECT pg_total_relation_size('curated.sales_order_lines');")
             pg_size = cur.fetchone()[0]
 
+    # Compile and Export Results DataFrame
+    results_data = [
+        {"Format": "CSV", "Size (bytes)": csv_size, "Write Median (s)": csv_write_time, "Full Read Median (s)": csv_read_full, "Filtered Read Median (s)": csv_read_filt},
+        {"Format": "JSONL", "Size (bytes)": jsonl_size, "Write Median (s)": jsonl_write_time, "Full Read Median (s)": jsonl_read_full, "Filtered Read Median (s)": jsonl_read_filt},
+        {"Format": "Parquet", "Size (bytes)": parquet_size, "Write Median (s)": parquet_write_time, "Full Read Median (s)": parquet_read_full, "Filtered Read Median (s)": parquet_read_filt},
+        {"Format": "PostgreSQL", "Size (bytes)": pg_size, "Write Median (s)": None, "Full Read Median (s)": pg_read_full, "Filtered Read Median (s)": pg_read_filt}
+    ]
+    results_df = pd.DataFrame(results_data)
+    
+    results_path = output_dir / "benchmark_results.csv"
+    results_df.to_csv(results_path, index=False)
+
     print("\n--- BENCHMARK RESULTS ---")
+    print(f"Context: Lenovo LOQ 15IRX9 (Intel Core i5, NVMe SSD) | Row Count: {row_count:,}")
+    print("-" * 95)
     print(f"{'Metric':<25} | {'CSV':<15} | {'JSONL':<15} | {'Parquet':<15} | {'PostgreSQL':<15}")
     print("-" * 95)
     print(f"{'Size (bytes)':<25} | {csv_size:<15,d} | {jsonl_size:<15,d} | {parquet_size:<15,d} | {pg_size:<15,d} (server)")
-    print(f"{'Write Time (sec)':<25} | {csv_write_time:<15.4f} | {jsonl_write_time:<15.4f} | {parquet_write_time:<15.4f} | {'N/A':<15}")
+    print(f"{'Write Median (sec)':<25} | {csv_write_time:<15.4f} | {jsonl_write_time:<15.4f} | {parquet_write_time:<15.4f} | {'N/A':<15}")
     print(f"{'Full Read Median (sec)':<25} | {csv_read_full:<15.4f} | {jsonl_read_full:<15.4f} | {parquet_read_full:<15.4f} | {pg_read_full:<15.4f}")
     print(f"{'Filtered Read Median (sec)':<25} | {csv_read_filt:<15.4f} | {jsonl_read_filt:<15.4f} | {parquet_read_filt:<15.4f} | {pg_read_filt:<15.4f}")
-
+    print(f"\nResults successfully exported to: {results_path}")
 
 def write_partitioned_parquet(df, output_dir):
     """Write Parquet partitioned by order_year/order_month."""
     print("\nWriting Partitioned Parquet (Task C)...")
     
-    # 1. Derive partition columns
     df['order_timestamp'] = pd.to_datetime(df['order_timestamp'])
     df['order_year'] = df['order_timestamp'].dt.year
     df['order_month'] = df['order_timestamp'].dt.month
     
-    # 2. Write partitioned structure
     partition_dir = Path(output_dir) / "partitioned"
     df.to_parquet(
         partition_dir,
